@@ -1,48 +1,102 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useRouter } from "next/navigation";
-import { motion, AnimatePresence } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowRight,
   BrainCircuit,
   Check,
+  ChevronDown,
+  ChevronRight,
+  Clock3,
+  Command,
+  Copy,
   FileText,
+  Grid2X2,
   Layers3,
+  List,
   Plus,
   Search,
-  Share2,
   ShieldCheck,
   Sparkles,
   Trash2,
   WandSparkles,
+  X,
   Zap,
-  ChevronRight,
-  Command,
-  PenLine,
 } from "lucide-react";
 
 import GlowOrbs from "@/components/GlowOrbs";
 import LiquidButton from "@/components/LiquidButton";
-
 import {
-  createId,
   addOwnedId,
-  saveNote,
-  getAllOwnedNotes,
+  createId,
   deleteNote,
-  Note,
+  getAllOwnedNotes,
+  saveNote,
+  type Note,
 } from "@/lib/storage";
+
+type SortMode = "updated" | "created" | "title";
+type ViewMode = "grid" | "list";
+
+const glass =
+  "border border-white/[0.075] bg-white/[0.028] backdrop-blur-2xl";
+const softGlass =
+  "border border-white/[0.055] bg-white/[0.018] backdrop-blur-xl";
+
+function wordCount(value: string) {
+  return value.trim() ? value.trim().split(/\s+/).length : 0;
+}
+
+function formatDate(timestamp: number) {
+  return new Date(timestamp).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function relativeDate(timestamp: number) {
+  const diff = Math.max(0, Date.now() - timestamp);
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+
+  if (diff < minute) return "Just now";
+  if (diff < hour) return `${Math.floor(diff / minute)}m ago`;
+  if (diff < day) return `${Math.floor(diff / hour)}h ago`;
+  if (diff < 7 * day) return `${Math.floor(diff / day)}d ago`;
+  return formatDate(timestamp);
+}
+
+function summarize(note: Note | null) {
+  if (!note?.content.trim()) {
+    return "Your note is empty. Start writing and Champion Assistant will turn important ideas into a cleaner summary.";
+  }
+
+  const clean = note.content.replace(/\s+/g, " ").trim();
+  const sentences = clean
+    .split(/(?<=[.!?])\s+/)
+    .filter(Boolean)
+    .slice(0, 4);
+
+  return sentences.length ? sentences.join(" ") : clean.slice(0, 420);
+}
 
 export default function HomePage() {
   const router = useRouter();
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const [notes, setNotes] = useState<Note[]>([]);
   const [mounted, setMounted] = useState(false);
-  const [hoveredNote, setHoveredNote] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<SortMode>("updated");
+  const [view, setView] = useState<ViewMode>("grid");
   const [aiOpen, setAiOpen] = useState(false);
+  const [commandOpen, setCommandOpen] = useState(false);
   const [selectedNote, setSelectedNote] = useState<Note | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Note | null>(null);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -50,11 +104,51 @@ export default function HomePage() {
     setMounted(true);
   }, []);
 
+  const latestNote = useMemo(
+    () =>
+      notes.length
+        ? [...notes].sort((a, b) => b.updatedAt - a.updatedAt)[0]
+        : null,
+    [notes]
+  );
+
+  const totalWords = useMemo(
+    () => notes.reduce((sum, note) => sum + wordCount(note.content), 0),
+    [notes]
+  );
+
+  const totalCharacters = useMemo(
+    () => notes.reduce((sum, note) => sum + note.content.length, 0),
+    [notes]
+  );
+
+  const filteredNotes = useMemo(() => {
+    const query = search.trim().toLowerCase();
+
+    return [...notes]
+      .filter(
+        (note) =>
+          !query ||
+          note.title.toLowerCase().includes(query) ||
+          note.content.toLowerCase().includes(query)
+      )
+      .sort((a, b) => {
+        if (sort === "title") {
+          return (a.title || "Untitled Note").localeCompare(
+            b.title || "Untitled Note"
+          );
+        }
+        return sort === "created"
+          ? b.createdAt - a.createdAt
+          : b.updatedAt - a.updatedAt;
+      });
+  }, [notes, search, sort]);
+
   function refreshNotes() {
     setNotes(getAllOwnedNotes());
   }
 
-  function handleCreate() {
+  function createNote() {
     const id = createId();
     const now = Date.now();
 
@@ -70,399 +164,302 @@ export default function HomePage() {
     router.push(`/note/${id}`);
   }
 
-  function handleDelete(id: string, e: React.MouseEvent) {
-    e.preventDefault();
-    e.stopPropagation();
-
-    deleteNote(id);
-    refreshNotes();
-  }
-
   function openAI(note?: Note) {
-    setSelectedNote(note || notes[0] || null);
+    setSelectedNote(note || latestNote || notes[0] || null);
     setAiOpen(true);
   }
 
-  function createDemoSummary(note: Note | null) {
-    if (!note || !note.content.trim()) {
-      return "Your note is empty. Start writing something and Champion Assistant will summarize the important points.";
-    }
-
-    const sentences = note.content
-      .replace(/\s+/g, " ")
-      .split(/[.!?]\s+/)
-      .filter(Boolean)
-      .slice(0, 3);
-
-    if (sentences.length === 0) {
-      return "Champion Assistant found content in your note, but there is not enough text yet for a useful summary.";
-    }
-
-    return sentences.join(". ") + (sentences.length ? "." : "");
+  function askDelete(note: Note, event: MouseEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    setDeleteTarget(note);
   }
 
-  const filteredNotes = useMemo(() => {
-    const query = search.trim().toLowerCase();
+  function confirmDelete() {
+    if (!deleteTarget) return;
+    deleteNote(deleteTarget.id);
+    setDeleteTarget(null);
+    refreshNotes();
+  }
 
-    if (!query) return notes;
+  async function copySummary() {
+    try {
+      await navigator.clipboard.writeText(summarize(selectedNote));
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setCopied(false);
+    }
+  }
 
-    return notes.filter(
-      (note) =>
-        note.title.toLowerCase().includes(query) ||
-        note.content.toLowerCase().includes(query)
-    );
-  }, [notes, search]);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const typing =
+        target?.tagName === "INPUT" ||
+        target?.tagName === "TEXTAREA" ||
+        target?.isContentEditable;
 
-  const totalCharacters = useMemo(
-    () => notes.reduce((sum, note) => sum + note.content.length, 0),
-    [notes]
-  );
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setCommandOpen(true);
+      }
 
-  const totalWords = useMemo(
-    () =>
-      notes.reduce(
-        (sum, note) =>
-          sum +
-          note.content
-            .trim()
-            .split(/\s+/)
-            .filter(Boolean).length,
-        0
-      ),
-    [notes]
-  );
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") {
+        event.preventDefault();
+        createNote();
+      }
 
-  const latestNote = notes.length
-    ? [...notes].sort((a, b) => b.updatedAt - a.updatedAt)[0]
-    : null;
+      if (event.key === "/" && !typing) {
+        event.preventDefault();
+        searchRef.current?.focus();
+      }
+
+      if (event.key === "Escape") {
+        setCommandOpen(false);
+        setAiOpen(false);
+        setDeleteTarget(null);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
 
   return (
-    <main className="relative min-h-screen overflow-hidden bg-[#05050f] text-white">
+    <main className="relative min-h-screen overflow-hidden bg-[#02040a] text-white selection:bg-cyan-400/25">
       <GlowOrbs />
 
-      {/* GLOBAL AMBIENT LIGHT */}
+      {/* Cinematic background */}
       <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden">
         <motion.div
           animate={{
-            x: [0, 80, -40, 0],
-            y: [0, -50, 40, 0],
-            opacity: [0.12, 0.2, 0.1, 0.12],
+            x: [0, 70, -30, 0],
+            y: [0, -35, 40, 0],
+            scale: [1, 1.08, 0.96, 1],
           }}
-          transition={{
-            duration: 18,
-            repeat: Infinity,
-            ease: "easeInOut",
-          }}
-          className="absolute left-[20%] top-[10%] h-[500px] w-[500px] rounded-full bg-fuchsia-500 blur-[180px]"
+          transition={{ duration: 24, repeat: Infinity, ease: "easeInOut" }}
+          className="absolute -left-44 -top-40 h-[620px] w-[620px] rounded-full bg-violet-600/[0.11] blur-[180px]"
         />
-
         <motion.div
           animate={{
-            x: [0, -70, 50, 0],
-            y: [0, 50, -30, 0],
-            opacity: [0.08, 0.16, 0.08, 0.08],
+            x: [0, -80, 30, 0],
+            y: [0, 40, -30, 0],
+            scale: [1, 0.94, 1.08, 1],
           }}
-          transition={{
-            duration: 22,
-            repeat: Infinity,
-            ease: "easeInOut",
-          }}
-          className="absolute right-[10%] top-[35%] h-[550px] w-[550px] rounded-full bg-cyan-500 blur-[190px]"
+          transition={{ duration: 28, repeat: Infinity, ease: "easeInOut" }}
+          className="absolute -right-48 top-[18%] h-[680px] w-[680px] rounded-full bg-cyan-500/[0.065] blur-[200px]"
         />
-
-        <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.018)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.018)_1px,transparent_1px)] bg-[size:70px_70px] [mask-image:radial-gradient(ellipse_at_center,black_20%,transparent_80%)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_-10%,rgba(124,58,237,.12),transparent_42%)]" />
+        <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,.016)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.016)_1px,transparent_1px)] bg-[size:68px_68px] [mask-image:radial-gradient(ellipse_at_center,black_20%,transparent_80%)]" />
+        <div className="absolute inset-x-0 top-0 h-[520px] bg-gradient-to-b from-black/30 to-transparent" />
       </div>
 
-      <div className="relative z-10 mx-auto min-h-screen w-full max-w-7xl px-4 sm:px-6 lg:px-8">
-
-        {/* NAVBAR */}
+      <div className="relative z-10 mx-auto min-h-screen w-full max-w-[1500px] px-4 sm:px-6 lg:px-8">
+        {/* NAVIGATION */}
         <motion.header
-          initial={{ opacity: 0, y: -20 }}
+          initial={{ opacity: 0, y: -16 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.7 }}
-          className="sticky top-0 z-50 flex items-center justify-between border-b border-white/[0.04] bg-[#05050f]/60 py-5 backdrop-blur-2xl"
+          className="sticky top-0 z-50 flex h-[76px] items-center justify-between border-b border-white/[0.055] bg-[#02040a]/72 backdrop-blur-2xl"
         >
-          <div className="flex items-center gap-3">
+          <button
+            onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+            className="group flex items-center gap-3"
+          >
             <motion.div
-              whileHover={{
-                scale: 1.08,
-                rotate: 5,
-              }}
-              className="relative flex h-10 w-10 items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-white/[0.05]"
+              whileHover={{ scale: 1.05, rotate: 3 }}
+              className="relative flex h-11 w-11 items-center justify-center overflow-hidden rounded-[15px] border border-white/10 bg-white/[0.045] shadow-[0_0_45px_rgba(124,58,237,.14)]"
             >
               <motion.div
-                animate={{
-                  rotate: 360,
-                }}
-                transition={{
-                  duration: 8,
-                  repeat: Infinity,
-                  ease: "linear",
-                }}
-                className="absolute inset-[-30%] bg-[conic-gradient(from_0deg,transparent,rgba(168,85,247,.7),transparent,rgba(34,211,238,.6),transparent)]"
+                animate={{ rotate: 360 }}
+                transition={{ duration: 10, repeat: Infinity, ease: "linear" }}
+                className="absolute inset-[-60%] bg-[conic-gradient(from_0deg,transparent,rgba(168,85,247,.95),transparent,rgba(34,211,238,.85),transparent)]"
               />
-
-              <div className="relative flex h-8 w-8 items-center justify-center rounded-xl bg-[#080813]">
-                <BrainCircuit
-                  size={18}
-                  className="text-purple-200"
-                />
+              <div className="relative flex h-9 w-9 items-center justify-center rounded-[12px] bg-[#070b14]">
+                <BrainCircuit size={18} className="text-cyan-100" />
               </div>
             </motion.div>
 
-            <div>
-              <div className="text-sm font-black tracking-tight">
-                Champion
-                <span className="text-purple-400">.</span>
+            <div className="text-left">
+              <div className="text-[15px] font-black tracking-tight">
+                Champion<span className="text-cyan-300">.</span>
               </div>
-
-              <div className="text-[9px] uppercase tracking-[0.28em] text-white/25">
-                Smart Notes
+              <div className="text-[8px] uppercase tracking-[0.3em] text-white/25">
+                Intelligent Notes
               </div>
             </div>
-          </div>
+          </button>
 
           <div className="hidden items-center gap-2 md:flex">
-            <div className="flex items-center gap-2 rounded-full border border-emerald-400/10 bg-emerald-400/[0.04] px-3 py-1.5">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
-              <span className="text-[10px] font-medium uppercase tracking-wider text-emerald-300/60">
-                Private Workspace
+            <div className="flex items-center gap-2 rounded-full border border-emerald-300/10 bg-emerald-300/[0.035] px-3 py-1.5">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-300" />
+              <span className="text-[9px] font-semibold uppercase tracking-[0.18em] text-emerald-200/55">
+                Local & Private
               </span>
             </div>
+
+            <button
+              onClick={() => setCommandOpen(true)}
+              className="flex items-center gap-2 rounded-full border border-white/[0.07] bg-white/[0.025] px-3 py-1.5 text-[9px] text-white/35 transition hover:border-white/15 hover:text-white/70"
+            >
+              <Command size={11} />
+              Command
+              <kbd className="rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[8px]">
+                K
+              </kbd>
+            </button>
           </div>
 
-          <motion.button
-            whileHover={{ scale: 1.04 }}
-            whileTap={{ scale: 0.96 }}
+          <button
             onClick={() => openAI()}
-            className="flex items-center gap-2 rounded-xl border border-purple-400/10 bg-purple-500/[0.07] px-3 py-2 text-xs font-semibold text-purple-200 transition hover:border-purple-400/25 hover:bg-purple-500/[0.12]"
+            className="flex items-center gap-2 rounded-xl border border-cyan-300/10 bg-cyan-300/[0.055] px-3.5 py-2 text-xs font-semibold text-cyan-50 transition hover:border-cyan-300/20 hover:bg-cyan-300/[0.09]"
           >
             <WandSparkles size={14} />
-            <span className="hidden sm:inline">
-              AI Assistant
-            </span>
-          </motion.button>
+            <span className="hidden sm:inline">AI Studio</span>
+          </button>
         </motion.header>
 
         {/* HERO */}
-        <section className="relative flex min-h-[680px] flex-col items-center justify-center py-20 text-center lg:min-h-[720px]">
-
-          {/* Floating AI badge */}
+        <section className="relative flex min-h-[690px] flex-col items-center justify-center py-24 text-center">
           <motion.div
-            initial={{ opacity: 0, scale: 0.8, y: 20 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            transition={{
-              duration: 0.8,
-              type: "spring",
-            }}
-            className="relative mb-8"
+            initial={{ opacity: 0, y: 15, scale: 0.94 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            transition={{ duration: 0.75 }}
+            className="rounded-full border border-cyan-300/10 bg-cyan-300/[0.035] px-4 py-2 shadow-[0_0_50px_rgba(34,211,238,.05)] backdrop-blur-xl"
           >
-            <motion.div
-              animate={{
-                boxShadow: [
-                  "0 0 0 rgba(168,85,247,0)",
-                  "0 0 50px rgba(168,85,247,.18)",
-                  "0 0 0 rgba(168,85,247,0)",
-                ],
-              }}
-              transition={{
-                duration: 3,
-                repeat: Infinity,
-              }}
-              className="flex items-center gap-2 rounded-full border border-purple-400/15 bg-purple-500/[0.07] px-4 py-2 backdrop-blur-xl"
-            >
-              <Sparkles
-                size={14}
-                className="text-purple-300"
-              />
-
-              <span className="text-[11px] font-semibold text-purple-100/70">
-                AI-powered note workspace
+            <div className="flex items-center gap-2">
+              <Sparkles size={13} className="text-cyan-200" />
+              <span className="text-[10px] font-semibold tracking-wide text-cyan-50/65">
+                A calmer place for your ideas
               </span>
-
-              <span className="h-1 w-1 rounded-full bg-purple-300/40" />
-
-              <span className="text-[10px] text-white/30">
-                No account required
-              </span>
-            </motion.div>
+              <span className="h-1 w-1 rounded-full bg-white/20" />
+              <span className="text-[9px] text-white/25">No login</span>
+            </div>
           </motion.div>
 
-          {/* Main heading */}
           <motion.h1
             initial={{ opacity: 0, y: 35 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{
-              duration: 0.9,
-              delay: 0.1,
-            }}
-            className="max-w-5xl text-5xl font-black leading-[0.92] tracking-[-0.055em] sm:text-7xl lg:text-[100px]"
+            transition={{ duration: 0.9, delay: 0.08 }}
+            className="mt-8 max-w-6xl text-5xl font-black leading-[0.9] tracking-[-0.065em] sm:text-7xl lg:text-[105px]"
           >
-            Your ideas,
+            Write freely.
             <br />
-
-            <span className="relative inline-block">
-              <span className="text-gradient">
-                made smarter.
-              </span>
-
-              <motion.span
-                animate={{
-                  scaleX: [0.5, 1, 0.5],
-                  opacity: [0.3, 0.8, 0.3],
-                }}
-                transition={{
-                  duration: 4,
-                  repeat: Infinity,
-                  ease: "easeInOut",
-                }}
-                className="absolute -bottom-2 left-[10%] h-[2px] w-[80%] origin-center bg-gradient-to-r from-transparent via-purple-400 to-transparent blur-[1px]"
-              />
+            <span className="bg-gradient-to-r from-white via-violet-200 to-cyan-200 bg-clip-text text-transparent">
+              Think clearly.
             </span>
           </motion.h1>
 
           <motion.p
-            initial={{ opacity: 0, y: 20 }}
+            initial={{ opacity: 0, y: 18 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{
-              duration: 0.8,
-              delay: 0.3,
-            }}
-            className="mt-8 max-w-2xl text-sm leading-7 text-white/40 sm:text-lg"
+            transition={{ duration: 0.8, delay: 0.22 }}
+            className="mt-8 max-w-2xl text-sm leading-7 text-white/35 sm:text-lg"
           >
-            Write naturally. Organize your thoughts. Automatically
-            detect totals. And let AI turn long notes into clear,
-            useful summaries.
+            One beautiful workspace for notes, numbers, ideas and AI-powered
+            clarity — without accounts, clutter or distractions.
           </motion.p>
 
           <motion.div
-            initial={{ opacity: 0, y: 20, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            transition={{
-              duration: 0.7,
-              delay: 0.45,
-            }}
+            initial={{ opacity: 0, y: 18 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.35 }}
             className="mt-10 flex flex-col items-center gap-3 sm:flex-row"
           >
             <LiquidButton
-              onClick={handleCreate}
-              className="px-8 py-4 text-sm sm:px-10 sm:text-base"
+              onClick={createNote}
+              className="px-8 py-4 text-sm sm:px-10"
             >
-              <Plus size={19} />
+              <Plus size={18} />
               Create New Note
-              <ArrowRight size={17} />
+              <ArrowRight size={16} />
             </LiquidButton>
 
-            <motion.button
-              whileHover={{
-                scale: 1.03,
-                backgroundColor: "rgba(255,255,255,0.06)",
-              }}
-              whileTap={{ scale: 0.97 }}
+            <button
               onClick={() => openAI()}
-              className="flex items-center gap-2 rounded-2xl border border-white/[0.07] bg-white/[0.025] px-6 py-4 text-sm font-medium text-white/60 backdrop-blur-xl transition"
+              className="flex items-center gap-2 rounded-2xl border border-white/[0.075] bg-white/[0.025] px-6 py-4 text-sm font-medium text-white/55 backdrop-blur-xl transition hover:border-cyan-300/15 hover:bg-white/[0.045] hover:text-white"
             >
-              <WandSparkles
-                size={17}
-                className="text-purple-300"
-              />
-              Try AI Summary
-            </motion.button>
+              <WandSparkles size={17} className="text-cyan-200/70" />
+              Explore AI Studio
+            </button>
           </motion.div>
 
-          {/* Mini feature pills */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{
-              delay: 0.7,
-              duration: 0.8,
-            }}
-            className="mt-10 flex flex-wrap justify-center gap-2"
-          >
+          <div className="mt-9 flex flex-wrap justify-center gap-2">
             {[
-              [Zap, "Auto Totals"],
-              [WandSparkles, "AI Summary"],
-              [Share2, "Instant Share"],
-              [ShieldCheck, "Private"],
+              [Zap, "Smart totals"],
+              [WandSparkles, "AI summaries"],
+              [Search, "Instant search"],
+              [ShieldCheck, "Private by design"],
             ].map(([Icon, label]) => {
               const FeatureIcon = Icon as typeof Zap;
-
               return (
-                <div
+                <span
                   key={label as string}
-                  className="flex items-center gap-2 rounded-full border border-white/[0.06] bg-white/[0.025] px-3 py-1.5 text-[10px] text-white/30 backdrop-blur-xl"
+                  className="flex items-center gap-2 rounded-full border border-white/[0.055] bg-white/[0.018] px-3 py-1.5 text-[9px] text-white/25"
                 >
-                  <FeatureIcon
-                    size={11}
-                    className="text-purple-300/70"
-                  />
-
+                  <FeatureIcon size={11} className="text-cyan-200/60" />
                   {label as string}
-                </div>
+                </span>
               );
             })}
-          </motion.div>
+          </div>
 
-          {/* Hero floating card */}
+          {/* Floating preview */}
           <motion.div
-            initial={{
-              opacity: 0,
-              y: 40,
-              rotateX: 10,
-            }}
-            animate={{
-              opacity: 1,
-              y: 0,
-              rotateX: 0,
-            }}
-            transition={{
-              duration: 1,
-              delay: 0.8,
-            }}
-            className="absolute -bottom-8 left-1/2 hidden w-[720px] -translate-x-1/2 lg:block"
+            initial={{ opacity: 0, y: 55, rotateX: 8 }}
+            animate={{ opacity: 1, y: 0, rotateX: 0 }}
+            transition={{ duration: 1, delay: 0.55 }}
+            className="absolute -bottom-16 hidden w-[880px] lg:block"
           >
-            <div className="relative overflow-hidden rounded-[2rem] border border-white/[0.08] bg-white/[0.025] p-1 shadow-[0_30px_100px_rgba(0,0,0,0.45)] backdrop-blur-2xl">
-              <div className="rounded-[1.7rem] border border-white/[0.04] bg-[#090914]/90 p-5">
-                <div className="mb-4 flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div className="h-2 w-2 rounded-full bg-red-400/70" />
-                    <div className="h-2 w-2 rounded-full bg-yellow-400/70" />
-                    <div className="h-2 w-2 rounded-full bg-green-400/70" />
+            <div className="rounded-[2.3rem] border border-white/[0.09] bg-white/[0.028] p-1 shadow-[0_45px_130px_rgba(0,0,0,.65)] backdrop-blur-2xl">
+              <div className="overflow-hidden rounded-[2rem] border border-white/[0.05] bg-[#070b13]/95 p-5">
+                <div className="mb-5 flex items-center justify-between">
+                  <div className="flex gap-1.5">
+                    <span className="h-2 w-2 rounded-full bg-red-300/55" />
+                    <span className="h-2 w-2 rounded-full bg-amber-300/55" />
+                    <span className="h-2 w-2 rounded-full bg-emerald-300/55" />
                   </div>
-
-                  <div className="flex items-center gap-2 text-[9px] text-white/20">
-                    <Command size={10} />
-                    Smart Workspace
+                  <div className="flex items-center gap-2 text-[8px] tracking-[0.22em] text-white/15">
+                    <BrainCircuit size={10} />
+                    CHAMPION WORKSPACE
                   </div>
                 </div>
 
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="col-span-2 rounded-2xl border border-white/[0.05] bg-white/[0.025] p-5">
-                    <div className="mb-4 h-2 w-20 rounded-full bg-purple-400/20" />
-                    <div className="space-y-2">
-                      <div className="h-2 w-full rounded-full bg-white/[0.06]" />
-                      <div className="h-2 w-[85%] rounded-full bg-white/[0.04]" />
-                      <div className="h-2 w-[65%] rounded-full bg-white/[0.04]" />
+                <div className="grid grid-cols-12 gap-3">
+                  <div className="col-span-3 rounded-2xl border border-white/[0.05] bg-white/[0.022] p-4">
+                    <div className="h-2 w-16 rounded-full bg-cyan-300/15" />
+                    <div className="mt-5 space-y-2">
+                      <div className="h-8 rounded-lg bg-cyan-300/[0.06]" />
+                      <div className="h-8 rounded-lg bg-white/[0.025]" />
+                      <div className="h-8 rounded-lg bg-white/[0.025]" />
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-purple-400/10 bg-purple-500/[0.05] p-5">
-                    <div className="mb-3 flex items-center gap-2">
-                      <WandSparkles
-                        size={13}
-                        className="text-purple-300"
-                      />
+                  <div className="col-span-5 rounded-2xl border border-white/[0.05] bg-white/[0.022] p-5">
+                    <div className="h-2 w-28 rounded-full bg-white/[0.08]" />
+                    <div className="mt-6 space-y-3">
+                      <div className="h-2 w-full rounded-full bg-white/[0.06]" />
+                      <div className="h-2 w-[88%] rounded-full bg-white/[0.045]" />
+                      <div className="h-2 w-[71%] rounded-full bg-white/[0.035]" />
+                      <div className="mt-6 h-20 rounded-xl bg-gradient-to-br from-violet-400/[0.08] to-cyan-400/[0.04]" />
+                    </div>
+                  </div>
 
-                      <span className="text-[9px] font-semibold text-purple-200/60">
-                        AI SUMMARY
+                  <div className="col-span-4 rounded-2xl border border-cyan-300/10 bg-gradient-to-br from-cyan-300/[0.055] to-violet-400/[0.055] p-5">
+                    <div className="flex items-center gap-2">
+                      <WandSparkles size={13} className="text-cyan-200/80" />
+                      <span className="text-[8px] font-bold tracking-[0.18em] text-cyan-100/45">
+                        AI INSIGHT
                       </span>
                     </div>
-
-                    <div className="space-y-2">
-                      <div className="h-2 w-full rounded-full bg-purple-300/10" />
-                      <div className="h-2 w-[90%] rounded-full bg-purple-300/[0.07]" />
-                      <div className="h-2 w-[70%] rounded-full bg-purple-300/[0.05]" />
+                    <div className="mt-5 space-y-2">
+                      <div className="h-2 w-full rounded-full bg-cyan-200/10" />
+                      <div className="h-2 w-[86%] rounded-full bg-cyan-200/[0.07]" />
+                      <div className="h-2 w-[65%] rounded-full bg-cyan-200/[0.045]" />
+                    </div>
+                    <div className="mt-6 flex gap-2">
+                      <div className="h-7 w-20 rounded-lg bg-cyan-300/[0.07]" />
+                      <div className="h-7 w-16 rounded-lg bg-violet-300/[0.07]" />
                     </div>
                   </div>
                 </div>
@@ -471,529 +468,408 @@ export default function HomePage() {
           </motion.div>
         </section>
 
-        {/* DASHBOARD */}
-        <section className="relative mt-24 pb-10 lg:mt-40">
-
-          <div className="mb-7 flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
+        {/* WORKSPACE */}
+        <section className="relative mt-28 pb-12 lg:mt-44">
+          <div className="mb-7 flex flex-col justify-between gap-5 lg:flex-row lg:items-end">
             <div>
-              <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.3em] text-purple-300/50">
-                Your workspace
+              <p className="text-[9px] font-bold uppercase tracking-[0.3em] text-cyan-200/40">
+                Workspace
               </p>
-
-              <h2 className="text-3xl font-black tracking-tight sm:text-4xl">
-                Everything in one place.
+              <h2 className="mt-2 text-3xl font-black tracking-tight sm:text-4xl">
+                Your ideas, organized beautifully.
               </h2>
-
-              <p className="mt-2 max-w-xl text-sm text-white/30">
-                Your notes, your numbers and your AI tools —
-                ready when you are.
+              <p className="mt-2 max-w-xl text-sm text-white/25">
+                Everything important stays one click away.
               </p>
             </div>
 
-            <LiquidButton
-              onClick={handleCreate}
-              className="w-fit px-5 py-3"
-            >
-              <Plus size={16} />
-              New Note
-            </LiquidButton>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setCommandOpen(true)}
+                className="hidden items-center gap-2 rounded-xl border border-white/[0.07] bg-white/[0.022] px-4 py-3 text-[10px] text-white/35 transition hover:bg-white/[0.05] sm:flex"
+              >
+                <Command size={13} />
+                Quick actions
+              </button>
+              <LiquidButton onClick={createNote} className="px-5 py-3">
+                <Plus size={15} />
+                New Note
+              </LiquidButton>
+            </div>
           </div>
 
-          {/* Stats */}
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-
+          {/* STATS */}
+          <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
             {[
-              {
-                label: "Total Notes",
-                value: notes.length,
-                icon: Layers3,
-                text: "Your workspace",
-              },
-              {
-                label: "Words",
-                value: totalWords,
-                icon: PenLine,
-                text: "Across all notes",
-              },
-              {
-                label: "Characters",
-                value: totalCharacters,
-                icon: FileText,
-                text: "Written content",
-              },
-              {
-                label: "AI Ready",
-                value: "100%",
-                icon: WandSparkles,
-                text: "Summarization",
-              },
-            ].map((stat, index) => {
-              const Icon = stat.icon;
-
+              [Layers3, "Notes", notes.length, "In your library"],
+              [FileText, "Words", totalWords.toLocaleString(), "Across all notes"],
+              [Zap, "Characters", totalCharacters.toLocaleString(), "Written so far"],
+              [ShieldCheck, "Privacy", "LOCAL", "No account required"],
+            ].map(([Icon, label, value, hint], index) => {
+              const I = Icon as typeof Layers3;
               return (
                 <motion.div
-                  key={stat.label}
-                  initial={{
-                    opacity: 0,
-                    y: 20,
-                  }}
-                  whileInView={{
-                    opacity: 1,
-                    y: 0,
-                  }}
-                  viewport={{
-                    once: true,
-                  }}
-                  transition={{
-                    delay: index * 0.08,
-                  }}
-                  whileHover={{
-                    y: -4,
-                  }}
-                  className="group relative overflow-hidden rounded-2xl border border-white/[0.06] bg-white/[0.025] p-4 backdrop-blur-xl transition-all hover:border-purple-400/15 hover:bg-white/[0.04]"
+                  key={label as string}
+                  initial={{ opacity: 0, y: 15 }}
+                  whileInView={{ opacity: 1, y: 0 }}
+                  viewport={{ once: true }}
+                  transition={{ delay: index * 0.05 }}
+                  whileHover={{ y: -4 }}
+                  className={`group relative overflow-hidden rounded-2xl p-5 ${softGlass} transition hover:border-cyan-300/10 hover:bg-white/[0.032]`}
                 >
-                  <div className="flex items-center justify-between">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-purple-500/[0.08]">
-                      <Icon
-                        size={15}
-                        className="text-purple-300/70"
-                      />
+                  <div className="absolute -right-10 -top-10 h-28 w-28 rounded-full bg-cyan-300/[0.025] blur-2xl transition group-hover:bg-cyan-300/[0.07]" />
+                  <div className="relative flex items-center justify-between">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-cyan-300/10 bg-cyan-300/[0.045]">
+                      <I size={16} className="text-cyan-100/65" />
                     </div>
-
-                    <Sparkles
-                      size={12}
-                      className="text-white/10 transition group-hover:text-purple-300/30"
-                    />
+                    <Sparkles size={11} className="text-white/10" />
                   </div>
-
-                  <div className="mt-4 text-2xl font-black">
-                    {stat.value}
+                  <div className="relative mt-5 text-2xl font-black tracking-tight">
+                    {value as string | number}
                   </div>
-
-                  <div className="mt-1 text-[10px] font-medium uppercase tracking-wider text-white/25">
-                    {stat.label}
+                  <div className="relative mt-1 text-[9px] font-bold uppercase tracking-[0.18em] text-white/20">
+                    {label as string}
                   </div>
-
-                  <div className="mt-2 text-[10px] text-white/15">
-                    {stat.text}
+                  <div className="relative mt-2 text-[9px] text-white/15">
+                    {hint as string}
                   </div>
                 </motion.div>
               );
             })}
           </div>
 
-          {/* AI ASSISTANT */}
+          {/* AI CARD */}
           <motion.div
-            initial={{
-              opacity: 0,
-              y: 25,
-            }}
-            whileInView={{
-              opacity: 1,
-              y: 0,
-            }}
-            viewport={{
-              once: true,
-            }}
-            className="group relative mt-5 overflow-hidden rounded-[2rem] border border-purple-400/10 bg-gradient-to-br from-purple-500/[0.08] via-white/[0.025] to-cyan-500/[0.04] p-6 backdrop-blur-2xl sm:p-8"
+            initial={{ opacity: 0, y: 20 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            className="relative mt-5 overflow-hidden rounded-[2rem] border border-cyan-300/10 bg-gradient-to-br from-violet-500/[0.07] via-white/[0.022] to-cyan-400/[0.055] p-6 sm:p-8"
           >
-            <div className="pointer-events-none absolute -right-24 -top-24 h-72 w-72 rounded-full bg-purple-500/10 blur-[100px]" />
-
-            <div className="pointer-events-none absolute -bottom-24 -left-24 h-72 w-72 rounded-full bg-cyan-500/[0.07] blur-[100px]" />
+            <div className="pointer-events-none absolute -right-24 -top-24 h-80 w-80 rounded-full bg-cyan-400/[0.055] blur-[100px]" />
+            <div className="pointer-events-none absolute -bottom-28 -left-20 h-72 w-72 rounded-full bg-violet-500/[0.07] blur-[100px]" />
 
             <div className="relative flex flex-col justify-between gap-7 lg:flex-row lg:items-center">
-
-              <div className="max-w-2xl">
-                <div className="mb-4 flex items-center gap-2">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-purple-400/15 bg-purple-500/[0.1]">
-                    <WandSparkles
-                      size={18}
-                      className="text-purple-200"
-                    />
+              <div>
+                <div className="flex items-center gap-3">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-cyan-300/10 bg-cyan-300/[0.055]">
+                    <WandSparkles size={18} className="text-cyan-100/80" />
                   </div>
-
                   <div>
-                    <p className="text-[9px] font-bold uppercase tracking-[0.25em] text-purple-300/60">
-                      Champion AI
+                    <p className="text-[9px] font-bold uppercase tracking-[0.25em] text-cyan-100/45">
+                      Champion AI Studio
                     </p>
-
-                    <p className="text-xs text-white/30">
-                      Your personal writing assistant
+                    <p className="mt-0.5 text-xs text-white/25">
+                      Turn notes into clarity
                     </p>
                   </div>
                 </div>
 
-                <h3 className="text-2xl font-black tracking-tight sm:text-3xl">
-                  Turn long notes into
-                  <span className="text-gradient">
-                    {" "}clear ideas.
+                <h3 className="mt-5 text-2xl font-black tracking-tight sm:text-3xl">
+                  Less reading.
+                  <br />
+                  <span className="bg-gradient-to-r from-violet-200 to-cyan-200 bg-clip-text text-transparent">
+                    More understanding.
                   </span>
                 </h3>
 
-                <p className="mt-3 max-w-xl text-sm leading-6 text-white/30">
-                  Select a note and let the AI assistant identify
-                  the key ideas, remove unnecessary detail and
-                  give you a concise summary.
+                <p className="mt-3 max-w-xl text-sm leading-6 text-white/25">
+                  Select a note and generate a clean local summary. The interface
+                  is ready for a production AI API whenever you want to connect one.
                 </p>
               </div>
 
-              <div className="shrink-0">
-                <LiquidButton
-                  onClick={() => openAI()}
-                  className="px-6 py-3.5"
-                >
-                  <WandSparkles size={16} />
-                  Summarize a Note
-                  <ArrowRight size={15} />
-                </LiquidButton>
-              </div>
-
+              <LiquidButton onClick={() => openAI()} className="shrink-0 px-6 py-3.5">
+                <WandSparkles size={16} />
+                Open AI Studio
+                <ArrowRight size={15} />
+              </LiquidButton>
             </div>
           </motion.div>
 
-          {/* NOTES HEADER */}
-          <div className="mt-14 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-
+          {/* LIBRARY HEADER */}
+          <div className="mt-14 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
             <div>
-              <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-white/20">
-                Library
+              <p className="text-[9px] font-bold uppercase tracking-[0.3em] text-white/15">
+                Knowledge library
               </p>
-
               <h3 className="mt-1 text-2xl font-black">
-                Recent Notes
+                {search.trim() ? "Search results" : "Recent Notes"}
               </h3>
             </div>
 
-            <div className="relative w-full sm:w-72">
-              <Search
-                size={15}
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-white/20"
-              />
+            <div className="flex items-center gap-2">
+              <div className="flex rounded-xl border border-white/[0.07] bg-white/[0.018] p-1">
+                <button
+                  onClick={() => setView("grid")}
+                  className={`rounded-lg p-2 transition ${
+                    view === "grid"
+                      ? "bg-white/[0.08] text-white"
+                      : "text-white/20 hover:text-white/50"
+                  }`}
+                  aria-label="Grid view"
+                >
+                  <Grid2X2 size={14} />
+                </button>
+                <button
+                  onClick={() => setView("list")}
+                  className={`rounded-lg p-2 transition ${
+                    view === "list"
+                      ? "bg-white/[0.08] text-white"
+                      : "text-white/20 hover:text-white/50"
+                  }`}
+                  aria-label="List view"
+                >
+                  <List size={14} />
+                </button>
+              </div>
 
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search your notes..."
-                className="h-10 w-full rounded-xl border border-white/[0.07] bg-white/[0.025] pl-9 pr-4 text-xs text-white outline-none transition placeholder:text-white/20 focus:border-purple-400/20 focus:bg-white/[0.04]"
-              />
+              <div className="relative">
+                <select
+                  value={sort}
+                  onChange={(e) => setSort(e.target.value as SortMode)}
+                  className="h-10 appearance-none rounded-xl border border-white/[0.07] bg-white/[0.02] pl-3 pr-9 text-[10px] text-white/35 outline-none focus:border-cyan-300/15"
+                  aria-label="Sort notes"
+                >
+                  <option value="updated" className="bg-[#070b13]">
+                    Recently updated
+                  </option>
+                  <option value="created" className="bg-[#070b13]">
+                    Recently created
+                  </option>
+                  <option value="title" className="bg-[#070b13]">
+                    Title A–Z
+                  </option>
+                </select>
+                <ChevronDown
+                  size={11}
+                  className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-white/15"
+                />
+              </div>
             </div>
           </div>
 
-          {/* NOTES GRID */}
-          <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-
-            {filteredNotes.map((note, index) => (
-              <motion.a
-                key={note.id}
-                href={`/note/${note.id}`}
-                initial={{
-                  opacity: 0,
-                  y: 25,
-                }}
-                whileInView={{
-                  opacity: 1,
-                  y: 0,
-                }}
-                viewport={{
-                  once: true,
-                }}
-                transition={{
-                  duration: 0.45,
-                  delay: index * 0.05,
-                }}
-                whileHover={{
-                  y: -7,
-                }}
-                onMouseEnter={() =>
-                  setHoveredNote(note.id)
-                }
-                onMouseLeave={() =>
-                  setHoveredNote(null)
-                }
-                className="group relative flex min-h-[225px] flex-col overflow-hidden rounded-[1.7rem] border border-white/[0.07] bg-white/[0.025] p-5 backdrop-blur-2xl transition-all duration-500 hover:border-purple-400/20 hover:bg-white/[0.045] hover:shadow-[0_25px_80px_rgba(0,0,0,.35)]"
-              >
-                <motion.div
-                  animate={{
-                    opacity:
-                      hoveredNote === note.id ? 1 : 0,
-                  }}
-                  className="pointer-events-none absolute -right-24 -top-24 h-52 w-52 rounded-full bg-purple-500/15 blur-[90px]"
-                />
-
-                <div className="pointer-events-none absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/[0.04] to-transparent transition-transform duration-1000 group-hover:translate-x-full" />
-
-                <div className="relative z-10 flex items-center justify-between">
-
-                  <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-purple-400/10 bg-purple-500/[0.08]">
-                    <FileText
-                      size={17}
-                      className="text-purple-200"
-                    />
-                  </div>
-
-                  <div className="flex items-center gap-1">
-
-                    <motion.button
-                      whileHover={{
-                        scale: 1.08,
-                      }}
-                      whileTap={{
-                        scale: 0.92,
-                      }}
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        openAI(note);
-                      }}
-                      className="flex h-8 w-8 items-center justify-center rounded-lg text-white/20 opacity-0 transition hover:bg-purple-500/10 hover:text-purple-300 group-hover:opacity-100"
-                      aria-label="Summarize note"
-                    >
-                      <WandSparkles size={14} />
-                    </motion.button>
-
-                    <motion.button
-                      whileHover={{
-                        scale: 1.08,
-                      }}
-                      whileTap={{
-                        scale: 0.92,
-                      }}
-                      onClick={(e) =>
-                        handleDelete(note.id, e)
-                      }
-                      className="flex h-8 w-8 items-center justify-center rounded-lg text-white/20 opacity-0 transition hover:bg-red-500/10 hover:text-red-400 group-hover:opacity-100"
-                      aria-label="Delete note"
-                    >
-                      <Trash2 size={14} />
-                    </motion.button>
-
-                  </div>
-                </div>
-
-                <div className="relative z-10 mt-6">
-
-                  <h4 className="truncate text-base font-bold text-white/90">
-                    {note.title || "Untitled Note"}
-                  </h4>
-
-                  <p className="mt-2 line-clamp-3 text-sm leading-6 text-white/30">
-                    {note.content ||
-                      "Empty note — start writing something meaningful."}
-                  </p>
-                </div>
-
-                <div className="relative z-10 mt-auto flex items-center justify-between pt-7">
-
-                  <span className="text-[9px] uppercase tracking-[0.15em] text-white/20">
-                    {new Date(
-                      note.updatedAt
-                    ).toLocaleDateString(undefined, {
-                      month: "short",
-                      day: "numeric",
-                      year: "numeric",
-                    })}
-                  </span>
-
-                  <div className="flex items-center gap-1 text-[10px] font-semibold text-purple-300/40 transition group-hover:text-purple-300/70">
-                    Open
-                    <ChevronRight size={12} />
-                  </div>
-
-                </div>
-              </motion.a>
-            ))}
-
+          {/* SEARCH */}
+          <div className="relative mt-5">
+            <Search
+              size={15}
+              className="absolute left-4 top-1/2 -translate-y-1/2 text-white/15"
+            />
+            <input
+              ref={searchRef}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search notes, ideas, keywords..."
+              className="h-12 w-full rounded-2xl border border-white/[0.07] bg-white/[0.022] pl-11 pr-16 text-xs text-white outline-none transition placeholder:text-white/15 focus:border-cyan-300/15 focus:bg-white/[0.035]"
+            />
+            <kbd className="absolute right-3 top-1/2 hidden -translate-y-1/2 rounded-md border border-white/[0.05] bg-white/[0.03] px-2 py-1 font-mono text-[8px] text-white/15 sm:block">
+              /
+            </kbd>
           </div>
 
-          {/* EMPTY STATE */}
+          {/* NOTES */}
+          {filteredNotes.length > 0 && (
+            <div
+              className={`mt-5 ${
+                view === "grid"
+                  ? "grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3"
+                  : "flex flex-col gap-3"
+              }`}
+            >
+              {filteredNotes.map((note, index) => (
+                <motion.a
+                  key={note.id}
+                  href={`/note/${note.id}`}
+                  initial={{ opacity: 0, y: 18 }}
+                  whileInView={{ opacity: 1, y: 0 }}
+                  viewport={{ once: true }}
+                  transition={{ delay: Math.min(index * 0.035, 0.18) }}
+                  whileHover={{ y: -4 }}
+                  className={`group relative overflow-hidden rounded-[1.65rem] p-5 ${glass} transition duration-500 hover:border-cyan-300/12 hover:bg-white/[0.04] hover:shadow-[0_28px_85px_rgba(0,0,0,.4)] ${
+                    view === "grid" ? "min-h-[245px]" : ""
+                  }`}
+                >
+                  <div className="pointer-events-none absolute -right-20 -top-20 h-52 w-52 rounded-full bg-cyan-400/0 blur-[80px] transition group-hover:bg-cyan-400/[0.07]" />
+                  <div className="pointer-events-none absolute inset-y-0 -left-full w-1/2 skew-x-[-20deg] bg-gradient-to-r from-transparent via-white/[0.04] to-transparent transition-all duration-1000 group-hover:left-[130%]" />
+
+                  <div className="relative flex items-start justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-cyan-300/10 bg-cyan-300/[0.045]">
+                        <FileText size={16} className="text-cyan-100/65" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-[8px] font-bold uppercase tracking-[0.2em] text-white/15">
+                          Note
+                        </div>
+                        <h4 className="truncate text-sm font-bold text-white/80">
+                          {note.title || "Untitled Note"}
+                        </h4>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-1">
+                      <button
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          openAI(note);
+                        }}
+                        className="flex h-8 w-8 items-center justify-center rounded-lg text-white/15 opacity-0 transition hover:bg-cyan-300/10 hover:text-cyan-200 md:group-hover:opacity-100"
+                        aria-label="Open AI summary"
+                      >
+                        <WandSparkles size={13} />
+                      </button>
+                      <button
+                        onClick={(event) => askDelete(note, event)}
+                        className="flex h-8 w-8 items-center justify-center rounded-lg text-white/15 opacity-0 transition hover:bg-red-400/10 hover:text-red-300 md:group-hover:opacity-100"
+                        aria-label="Delete note"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="relative mt-6">
+                    <p className="line-clamp-3 text-xs leading-6 text-white/25">
+                      {note.content || "Empty note — ready for your ideas."}
+                    </p>
+
+                    <div className="mt-6 flex items-center justify-between">
+                      <span className="flex items-center gap-1.5 text-[8px] uppercase tracking-[0.15em] text-white/15">
+                        <Clock3 size={10} />
+                        {relativeDate(note.updatedAt)}
+                      </span>
+
+                      <span className="flex items-center gap-1 text-[9px] font-semibold text-cyan-200/30 transition group-hover:text-cyan-200/70">
+                        Open
+                        <ChevronRight size={11} />
+                      </span>
+                    </div>
+
+                    <div className="mt-5 flex gap-2">
+                      <span className="rounded-full border border-white/[0.05] bg-white/[0.018] px-2.5 py-1 text-[8px] text-white/15">
+                        {wordCount(note.content)} words
+                      </span>
+                      <span className="rounded-full border border-white/[0.05] bg-white/[0.018] px-2.5 py-1 text-[8px] text-white/15">
+                        {note.content.length} chars
+                      </span>
+                    </div>
+                  </div>
+                </motion.a>
+              ))}
+            </div>
+          )}
+
+          {/* EMPTY */}
           {mounted && notes.length === 0 && (
             <motion.div
-              initial={{
-                opacity: 0,
-                scale: 0.98,
-              }}
-              animate={{
-                opacity: 1,
-                scale: 1,
-              }}
-              className="relative mt-5 overflow-hidden rounded-[2rem] border border-white/[0.07] bg-white/[0.025] px-6 py-20 text-center backdrop-blur-2xl"
+              initial={{ opacity: 0, scale: 0.98 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className={`relative mt-5 overflow-hidden rounded-[2rem] p-12 text-center sm:p-20 ${glass}`}
             >
-              <div className="pointer-events-none absolute left-1/2 top-1/2 h-80 w-80 -translate-x-1/2 -translate-y-1/2 rounded-full bg-purple-500/[0.07] blur-[110px]" />
-
-              <motion.div
-                animate={{
-                  y: [0, -8, 0],
-                  rotate: [0, 2, -2, 0],
-                }}
-                transition={{
-                  duration: 5,
-                  repeat: Infinity,
-                  ease: "easeInOut",
-                }}
-                className="relative mx-auto flex h-20 w-20 items-center justify-center rounded-[1.5rem] border border-purple-400/10 bg-purple-500/[0.08] shadow-[0_0_50px_rgba(124,58,237,.12)]"
-              >
-                <BrainCircuit
-                  size={30}
-                  className="text-purple-200/80"
-                />
-              </motion.div>
-
-              <h3 className="relative mt-7 text-2xl font-black">
-                Your workspace starts here.
-              </h3>
-
-              <p className="relative mx-auto mt-3 max-w-md text-sm leading-6 text-white/30">
-                Create a note, write naturally and let Champion
-                Assistant help you understand it faster.
-              </p>
-
-              <div className="relative mt-8">
-                <LiquidButton
-                  onClick={handleCreate}
-                  className="px-7 py-3.5"
+              <div className="pointer-events-none absolute left-1/2 top-1/2 h-72 w-72 -translate-x-1/2 -translate-y-1/2 rounded-full bg-violet-500/[0.07] blur-[100px]" />
+              <div className="relative">
+                <motion.div
+                  animate={{ y: [0, -7, 0], rotate: [0, 2, -2, 0] }}
+                  transition={{ duration: 5, repeat: Infinity, ease: "easeInOut" }}
+                  className="mx-auto flex h-20 w-20 items-center justify-center rounded-[1.5rem] border border-cyan-300/10 bg-cyan-300/[0.045]"
                 >
-                  <Plus size={17} />
-                  Create First Note
-                </LiquidButton>
+                  <BrainCircuit size={29} className="text-cyan-100/65" />
+                </motion.div>
+                <h3 className="mt-7 text-2xl font-black">
+                  Your workspace starts here.
+                </h3>
+                <p className="mx-auto mt-3 max-w-md text-sm leading-6 text-white/25">
+                  Create your first note and turn this empty canvas into your
+                  personal knowledge system.
+                </p>
+                <div className="mt-8">
+                  <LiquidButton onClick={createNote} className="px-7 py-3.5">
+                    <Plus size={17} />
+                    Create First Note
+                  </LiquidButton>
+                </div>
               </div>
             </motion.div>
           )}
 
-          {mounted &&
-            notes.length > 0 &&
-            filteredNotes.length === 0 && (
-              <div className="mt-5 rounded-2xl border border-white/[0.06] bg-white/[0.02] px-6 py-12 text-center">
-                <Search
-                  size={24}
-                  className="mx-auto text-white/15"
-                />
-
-                <p className="mt-3 text-sm text-white/30">
-                  No notes match your search.
-                </p>
-              </div>
-            )}
-        </section>
-
-        {/* BOTTOM FEATURE STRIP */}
-        <section className="mt-24 grid grid-cols-1 gap-4 md:grid-cols-3">
-
-          {[
-            {
-              icon: WandSparkles,
-              title: "AI Summaries",
-              text: "Understand long notes in seconds.",
-            },
-            {
-              icon: Zap,
-              title: "Automatic Totals",
-              text: "Numbers are detected and calculated automatically.",
-            },
-            {
-              icon: ShieldCheck,
-              title: "Private by Design",
-              text: "Your notes stay on your device.",
-            },
-          ].map((feature, index) => {
-            const Icon = feature.icon;
-
-            return (
-              <motion.div
-                key={feature.title}
-                initial={{
-                  opacity: 0,
-                  y: 20,
-                }}
-                whileInView={{
-                  opacity: 1,
-                  y: 0,
-                }}
-                viewport={{
-                  once: true,
-                }}
-                transition={{
-                  delay: index * 0.1,
-                }}
-                whileHover={{
-                  y: -4,
-                }}
-                className="rounded-2xl border border-white/[0.05] bg-white/[0.02] p-5 transition hover:border-white/[0.1] hover:bg-white/[0.035]"
+          {mounted && notes.length > 0 && filteredNotes.length === 0 && (
+            <div className={`mt-5 rounded-[2rem] p-12 text-center ${glass}`}>
+              <Search size={27} className="mx-auto text-white/12" />
+              <p className="mt-4 text-sm font-semibold text-white/35">
+                Nothing matched “{search}”
+              </p>
+              <button
+                onClick={() => setSearch("")}
+                className="mt-5 rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-2.5 text-xs text-white/35 transition hover:bg-white/[0.05] hover:text-white/70"
               >
-                <Icon
-                  size={18}
-                  className="text-purple-300/60"
-                />
+                Clear Search
+              </button>
+            </div>
+          )}
 
-                <h4 className="mt-5 text-sm font-bold text-white/70">
-                  {feature.title}
-                </h4>
-
-                <p className="mt-2 text-xs leading-5 text-white/25">
-                  {feature.text}
-                </p>
-              </motion.div>
-            );
-          })}
+          {/* FEATURE CARDS */}
+          <div className="mt-20 grid gap-4 md:grid-cols-3">
+            {[
+              [WandSparkles, "AI summaries", "Turn long notes into concise, readable ideas."],
+              [Zap, "Smart numbers", "Keep numeric information clear and easy to manage."],
+              [ShieldCheck, "Private by design", "A clean local-first workspace without forced accounts."],
+            ].map(([Icon, title, text], index) => {
+              const I = Icon as typeof WandSparkles;
+              return (
+                <motion.div
+                  key={title as string}
+                  initial={{ opacity: 0, y: 18 }}
+                  whileInView={{ opacity: 1, y: 0 }}
+                  viewport={{ once: true }}
+                  transition={{ delay: index * 0.07 }}
+                  whileHover={{ y: -4 }}
+                  className={`rounded-2xl p-5 ${softGlass} transition hover:border-cyan-300/10`}
+                >
+                  <I size={18} className="text-cyan-100/60" />
+                  <h4 className="mt-5 text-sm font-bold text-white/65">
+                    {title as string}
+                  </h4>
+                  <p className="mt-2 text-xs leading-5 text-white/22">
+                    {text as string}
+                  </p>
+                </motion.div>
+              );
+            })}
+          </div>
         </section>
 
         {/* FOOTER */}
-        <footer className="mt-28 border-t border-white/[0.05] py-10">
-
+        <footer className="mt-24 border-t border-white/[0.05] py-10">
           <div className="flex flex-col items-center justify-between gap-5 sm:flex-row">
-
             <div className="flex items-center gap-3">
               <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-white/[0.06] bg-white/[0.025]">
-                <BrainCircuit
-                  size={16}
-                  className="text-purple-300"
-                />
+                <BrainCircuit size={15} className="text-cyan-100/65" />
               </div>
-
               <div>
-                <p className="text-xs font-bold">
-                  Champion Assistant
-                </p>
-
-                <p className="text-[9px] text-white/20">
-                  Think smarter. Write better.
-                </p>
+                <div className="text-xs font-bold">Champion Assistant</div>
+                <div className="text-[9px] text-white/15">
+                  Write freely. Think clearly.
+                </div>
               </div>
             </div>
 
             <div className="text-center sm:text-right">
-              <p className="text-[9px] uppercase tracking-[0.3em] text-white/15">
+              <div className="text-[8px] uppercase tracking-[0.3em] text-white/10">
                 Designed & Developed by
-              </p>
-
-              <motion.p
-                animate={{
-                  backgroundPosition: [
-                    "0% 50%",
-                    "100% 50%",
-                    "0% 50%",
-                  ],
-                }}
-                transition={{
-                  duration: 6,
-                  repeat: Infinity,
-                  ease: "easeInOut",
-                }}
-                className="mt-1 bg-[length:200%_auto] bg-gradient-to-r from-fuchsia-400 via-purple-400 to-cyan-400 bg-clip-text text-lg font-black tracking-[0.1em] text-transparent"
-              >
+              </div>
+              <div className="mt-1 bg-gradient-to-r from-violet-300 via-cyan-200 to-white bg-clip-text text-sm font-black tracking-[0.14em] text-transparent">
                 ABDUL MATEEN
-              </motion.p>
+              </div>
             </div>
-
           </div>
 
-          <p className="mt-8 text-center text-[9px] text-white/10">
-            © {new Date().getFullYear()} Champion Assistant. Built with
-            Next.js, TypeScript & Framer Motion.
-          </p>
+          <div className="mt-7 text-center text-[8px] text-white/10">
+            © {new Date().getFullYear()} Champion Assistant · Built for focused thinking.
+          </div>
         </footer>
       </div>
 
-      {/* AI MODAL */}
+      {/* AI STUDIO */}
       <AnimatePresence>
         {aiOpen && (
           <motion.div
@@ -1001,141 +877,252 @@ export default function HomePage() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={() => setAiOpen(false)}
-            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4 backdrop-blur-xl"
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/75 p-4 backdrop-blur-xl"
           >
             <motion.div
-              initial={{
-                opacity: 0,
-                y: 30,
-                scale: 0.95,
-              }}
-              animate={{
-                opacity: 1,
-                y: 0,
-                scale: 1,
-              }}
-              exit={{
-                opacity: 0,
-                y: 20,
-                scale: 0.97,
-              }}
-              transition={{
-                type: "spring",
-                stiffness: 300,
-                damping: 25,
-              }}
+              initial={{ opacity: 0, y: 25, scale: 0.97 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 15, scale: 0.98 }}
               onClick={(e) => e.stopPropagation()}
-              className="relative w-full max-w-2xl overflow-hidden rounded-[2rem] border border-purple-400/10 bg-[#090914]/95 p-6 shadow-[0_40px_120px_rgba(0,0,0,.7)] sm:p-8"
+              className="relative w-full max-w-2xl overflow-hidden rounded-[2rem] border border-cyan-300/10 bg-[#070b13] p-6 shadow-[0_45px_140px_rgba(0,0,0,.85)] sm:p-8"
             >
-              <div className="pointer-events-none absolute -right-24 -top-24 h-72 w-72 rounded-full bg-purple-500/10 blur-[100px]" />
+              <div className="pointer-events-none absolute -right-32 -top-32 h-80 w-80 rounded-full bg-cyan-400/[0.055] blur-[100px]" />
 
-              <div className="relative flex items-start justify-between gap-4">
-
+              <div className="relative flex items-start justify-between">
                 <div className="flex items-center gap-3">
-                  <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-purple-400/10 bg-purple-500/[0.08]">
-                    <WandSparkles
-                      size={19}
-                      className="text-purple-200"
-                    />
+                  <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-cyan-300/10 bg-cyan-300/[0.05]">
+                    <WandSparkles size={18} className="text-cyan-100/75" />
                   </div>
-
                   <div>
-                    <p className="text-[9px] font-bold uppercase tracking-[0.25em] text-purple-300/50">
+                    <p className="text-[8px] font-bold uppercase tracking-[0.25em] text-cyan-100/40">
                       Champion AI
                     </p>
-
-                    <h3 className="mt-1 text-xl font-black">
-                      Note Summarizer
-                    </h3>
+                    <h2 className="mt-1 text-xl font-black">Note Intelligence</h2>
                   </div>
                 </div>
 
                 <button
                   onClick={() => setAiOpen(false)}
-                  className="rounded-lg px-2 py-1 text-lg text-white/20 transition hover:bg-white/[0.05] hover:text-white/60"
+                  className="rounded-xl border border-white/[0.05] p-2 text-white/20 transition hover:bg-white/[0.05] hover:text-white"
                 >
-                  ×
+                  <X size={15} />
                 </button>
               </div>
 
-              <div className="relative mt-7">
-
-                {notes.length > 0 ? (
-                  <>
-                    <label className="text-[10px] font-semibold uppercase tracking-wider text-white/25">
-                      Select a note
+              {notes.length ? (
+                <>
+                  <div className="relative mt-7">
+                    <label className="text-[8px] font-bold uppercase tracking-[0.2em] text-white/18">
+                      Select note
                     </label>
+                    <div className="relative mt-2">
+                      <select
+                        value={selectedNote?.id || ""}
+                        onChange={(e) =>
+                          setSelectedNote(
+                            notes.find((n) => n.id === e.target.value) || null
+                          )
+                        }
+                        className="h-12 w-full appearance-none rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 pr-10 text-xs text-white outline-none focus:border-cyan-300/15"
+                      >
+                        {notes.map((note) => (
+                          <option
+                            key={note.id}
+                            value={note.id}
+                            className="bg-[#070b13]"
+                          >
+                            {note.title || "Untitled Note"}
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown
+                        size={13}
+                        className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-white/15"
+                      />
+                    </div>
+                  </div>
 
-                    <select
-                      value={selectedNote?.id || ""}
-                      onChange={(e) => {
-                        const note = notes.find(
-                          (item) => item.id === e.target.value
-                        );
-
-                        setSelectedNote(note || null);
-                      }}
-                      className="mt-2 h-12 w-full rounded-xl border border-white/[0.07] bg-white/[0.03] px-4 text-sm text-white outline-none focus:border-purple-400/20"
-                    >
-                      {notes.map((note) => (
-                        <option
-                          key={note.id}
-                          value={note.id}
-                          className="bg-[#090914]"
-                        >
-                          {note.title || "Untitled Note"}
-                        </option>
-                      ))}
-                    </select>
-
-                    <div className="mt-4 rounded-2xl border border-purple-400/10 bg-purple-500/[0.04] p-5">
-
-                      <div className="flex items-center gap-2">
-                        <Sparkles
-                          size={14}
-                          className="text-purple-300"
-                        />
-
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-purple-200/50">
-                          Summary
-                        </span>
+                  <div className="relative mt-4 rounded-[1.5rem] border border-cyan-300/10 bg-gradient-to-br from-violet-400/[0.055] to-cyan-400/[0.045] p-5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 text-[8px] font-bold uppercase tracking-[0.2em] text-cyan-100/45">
+                        <Sparkles size={12} />
+                        AI Summary
                       </div>
 
-                      <p className="mt-4 text-sm leading-7 text-white/50">
-                        {createDemoSummary(selectedNote)}
-                      </p>
+                      <button
+                        onClick={copySummary}
+                        className="flex items-center gap-1.5 rounded-lg border border-white/[0.06] px-2.5 py-1.5 text-[8px] text-white/25 hover:bg-white/[0.05]"
+                      >
+                        {copied ? <Check size={10} /> : <Copy size={10} />}
+                        {copied ? "Copied" : "Copy"}
+                      </button>
                     </div>
 
-                    <p className="mt-4 text-center text-[10px] text-white/20">
-                      AI interface ready — connect your preferred
-                      AI API for production summaries.
-                    </p>
-                  </>
-                ) : (
-                  <div className="rounded-2xl border border-white/[0.06] bg-white/[0.025] p-10 text-center">
-
-                    <FileText
-                      size={28}
-                      className="mx-auto text-white/15"
-                    />
-
-                    <p className="mt-4 text-sm text-white/40">
-                      Create a note first.
+                    <p className="mt-5 text-sm leading-7 text-white/50">
+                      {summarize(selectedNote)}
                     </p>
 
-                    <button
-                      onClick={() => {
-                        setAiOpen(false);
-                        handleCreate();
-                      }}
-                      className="mt-5 inline-flex items-center gap-2 rounded-xl bg-purple-500/10 px-4 py-2 text-xs font-semibold text-purple-200 transition hover:bg-purple-500/20"
-                    >
-                      <Plus size={14} />
-                      Create Note
-                    </button>
+                    {selectedNote && (
+                      <div className="mt-5 flex flex-wrap gap-2">
+                        <span className="rounded-full border border-white/[0.05] px-2.5 py-1 text-[8px] text-white/15">
+                          {wordCount(selectedNote.content)} words
+                        </span>
+                        <span className="rounded-full border border-white/[0.05] px-2.5 py-1 text-[8px] text-white/15">
+                          {selectedNote.content.length} chars
+                        </span>
+                        <span className="rounded-full border border-white/[0.05] px-2.5 py-1 text-[8px] text-white/15">
+                          {formatDate(selectedNote.updatedAt)}
+                        </span>
+                      </div>
+                    )}
                   </div>
-                )}
 
+                  <div className="mt-4 rounded-xl border border-amber-300/10 bg-amber-300/[0.025] px-4 py-3 text-[8px] leading-5 text-amber-100/25">
+                    Local summary mode is active. Connect your preferred AI API
+                    when you want model-generated intelligence.
+                  </div>
+                </>
+              ) : (
+                <div className="mt-7 rounded-2xl border border-white/[0.06] bg-white/[0.022] p-10 text-center">
+                  <FileText size={25} className="mx-auto text-white/12" />
+                  <p className="mt-4 text-xs text-white/25">
+                    Create a note first.
+                  </p>
+                  <button
+                    onClick={() => {
+                      setAiOpen(false);
+                      createNote();
+                    }}
+                    className="mt-5 rounded-xl bg-cyan-300/[0.08] px-4 py-2.5 text-[10px] font-semibold text-cyan-100/65"
+                  >
+                    <Plus size={13} className="mr-1 inline" />
+                    Create Note
+                  </button>
+                </div>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* COMMAND CENTER */}
+      <AnimatePresence>
+        {commandOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setCommandOpen(false)}
+            className="fixed inset-0 z-[110] flex items-start justify-center bg-black/70 px-4 pt-[12vh] backdrop-blur-xl"
+          >
+            <motion.div
+              initial={{ opacity: 0, y: -18, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -10 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-xl overflow-hidden rounded-[1.6rem] border border-white/[0.08] bg-[#070b13]/95 p-2 shadow-[0_40px_120px_rgba(0,0,0,.85)]"
+            >
+              <div className="flex items-center gap-3 border-b border-white/[0.05] px-4 py-3">
+                <Command size={15} className="text-cyan-200/45" />
+                <input
+                  autoFocus
+                  placeholder="What do you want to do?"
+                  className="w-full bg-transparent text-xs text-white outline-none placeholder:text-white/15"
+                />
+                <kbd className="rounded-md border border-white/[0.06] px-1.5 py-1 font-mono text-[8px] text-white/15">
+                  ESC
+                </kbd>
+              </div>
+
+              <div className="p-2">
+                {[
+                  [Plus, "Create new note", "Start writing immediately", createNote],
+                  [
+                    WandSparkles,
+                    "Open AI Studio",
+                    "Summarize a note",
+                    () => {
+                      setCommandOpen(false);
+                      openAI();
+                    },
+                  ],
+                  [
+                    Search,
+                    "Search notes",
+                    "Jump to your library",
+                    () => {
+                      setCommandOpen(false);
+                      searchRef.current?.focus();
+                    },
+                  ],
+                ].map(([Icon, title, text, action]) => {
+                  const I = Icon as typeof Plus;
+                  return (
+                    <button
+                      key={title as string}
+                      onClick={action as () => void}
+                      className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition hover:bg-white/[0.045]"
+                    >
+                      <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.022]">
+                        <I size={14} className="text-cyan-100/60" />
+                      </div>
+                      <div className="flex-1">
+                        <div className="text-xs font-semibold text-white/65">
+                          {title as string}
+                        </div>
+                        <div className="mt-0.5 text-[8px] text-white/15">
+                          {text as string}
+                        </div>
+                      </div>
+                      <ArrowRight size={12} className="text-white/10" />
+                    </button>
+                  );
+                })}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* DELETE CONFIRMATION */}
+      <AnimatePresence>
+        {deleteTarget && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setDeleteTarget(null)}
+            className="fixed inset-0 z-[120] flex items-center justify-center bg-black/75 p-4 backdrop-blur-xl"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-md rounded-[1.7rem] border border-red-300/10 bg-[#070b13] p-6 shadow-[0_45px_120px_rgba(0,0,0,.85)]"
+            >
+              <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-red-300/10 bg-red-400/[0.06]">
+                <Trash2 size={18} className="text-red-200/75" />
+              </div>
+
+              <h2 className="mt-5 text-xl font-black">Delete this note?</h2>
+              <p className="mt-2 text-xs leading-6 text-white/22">
+                “{deleteTarget.title || "Untitled Note"}” will be removed from
+                your workspace.
+              </p>
+
+              <div className="mt-6 flex gap-2">
+                <button
+                  onClick={() => setDeleteTarget(null)}
+                  className="flex-1 rounded-xl border border-white/[0.06] bg-white/[0.022] py-3 text-xs text-white/35 hover:bg-white/[0.05]"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmDelete}
+                  className="flex-1 rounded-xl border border-red-300/10 bg-red-400/[0.07] py-3 text-xs font-semibold text-red-100/70 hover:bg-red-400/[0.12]"
+                >
+                  Delete Note
+                </button>
               </div>
             </motion.div>
           </motion.div>
